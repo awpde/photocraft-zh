@@ -5,6 +5,19 @@
 - 上游项目：<https://github.com/storytold/photocraft>（纯 Rust 重写的 Photoshop，Apache-2.0）
 - 本仓库**不包含** PhotoCraft 的任何源码，只是构建流水线：每次构建都从上游现拉源码。
 
+## ⚠️ 非官方构建声明
+
+本仓库产出的是**非官方第三方构建**，**不是官方发布**，与原项目作者不存在隶属、
+赞助或背书关系。
+
+- 程序主体为原作者（PhotoCraft contributors）的作品，采用 **Apache-2.0** 许可
+  （[LICENSE-APACHE](https://github.com/storytold/photocraft/blob/main/LICENSE-APACHE)，
+  仓库内同时提供 [LICENSE-MIT](https://github.com/storytold/photocraft/blob/main/LICENSE-MIT)）。
+- 本仓库**只修改构建配置与安装界面，未修改程序源码**（唯一改动是安装时可选安装位置）。
+- 名称 `PhotoCraft` 仅用于说明本软件来源，不构成对其名称或商标的任何主张。
+- 随每个 Release 一并分发的 `LICENSE-APACHE.txt`、`LICENSE-MIT.txt`、`NOTICE.txt`
+  是上游许可证与声明**原文**；`UNOFFICIAL-BUILD-zh-CN.txt` 说明本构建具体改了什么。
+
 ## 下载
 
 打开本仓库的 **Releases** 页面，下载带 `Latest` 标记的那个版本里的
@@ -74,7 +87,19 @@
 - **覆盖升级**：MSI 使用 `MajorUpgrade AllowSameVersionUpgrades="yes"` 且 `UpgradeCode` 与官方一致，
   所以本包会**直接替换**已安装的官方同版本，不用先手动卸载。
 
-## 许可
+## 许可、署名与改动声明
 
-PhotoCraft 采用 Apache-2.0。本仓库的流水线配置同样可按需取用。
-字体不随本包分发（使用系统字体）。
+PhotoCraft 采用 **Apache-2.0**（仓库内同时提供 MIT 许可文本）。每个 Release 都附带：
+
+| 文件 | 内容 |
+|---|---|
+| `LICENSE-APACHE.txt`、`LICENSE-MIT.txt` | 上游许可证全文 |
+| `NOTICE.txt` | 上游版权、商标与第三方组件许可声明 |
+| `UNOFFICIAL-BUILD-zh-CN.txt` | 本构建的改动说明（非官方声明）|
+
+便携版 zip 内同时含 `LICENSE-MIT`、`LICENSE-APACHE`、`README.md` 与内嵌字体的许可文件。
+
+界面中文字体使用系统字体（Windows 上为微软雅黑），因此本包**不分发任何中文字体**。
+
+本构建为非官方第三方构建，与原项目作者无隶属、赞助或背书关系；名称 `PhotoCraft`
+仅用于说明本软件来源。本仓库的流水线配置同样可按需取用。
