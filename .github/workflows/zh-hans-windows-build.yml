@@ -43,6 +43,13 @@ env:
   # 界面译文所在的文件。没有它就说明这个版本还是英文界面，直接跳过构建。
   ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
 
+  # 与官方发版**完全一致**的字形集合（官方 release.yml 里锁的就是这个 commit）。
+  # 里面是日文字体；简体中文/繁体中文不走它，而是运行时读系统字体（Windows 上为微软雅黑）。
+  # 不设它也能构建（上游有 ui_works_without_craft_fonts 测试），但那样日文界面会退回系统日文字体，
+  # 交付物就和官方不一致了。设上它之后，我们的包与官方的唯一差别就只有安装界面。
+  CRAFT_FONTS_REPO: storytold/craft-fonts
+  CRAFT_FONTS_REF: abb83316d96aa59c1cf64784289e378fe9fa5695
+
   # ---- 「自选安装位置」注入参数 ------------------------------------------------------------
   # 我们的界面文件（在**本仓库**里）与它要放到的位置（上游源码树里）。
   OUR_UI: overrides/installer-ui.wxs
@@ -228,6 +235,16 @@ jobs:
           path: builder
           fetch-depth: 1
 
+      # 与官方发版一致的内嵌字体集合。缺了它构建也能过（上游支持无字体构建），
+      # 但交付物会和官方不一致，所以这里连同 CRAFT_FONTS_REQUIRED=1 一起设上：
+      # 字体目录拿不到就直接失败，而不是静默产出一个少了字体的包。
+      - name: 拉取 craft-fonts（与官方发版一致的字形集合）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRAFT_FONTS_REPO }}
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+
       # 把我们的安装界面接上去：两处极小注入 + 复制界面文件本身。
       # 每处都先校验锚点存在且唯一，并在注入后复查，任何一步不符就红着失败，
       # 不会静默产出一个「不能自选安装路径」的包。
@@ -328,11 +345,17 @@ jobs:
         env:
           PHOTOCRAFT_VERSION: ${{ steps.v.outputs.full }}
           PHOTOCRAFT_BUILD_SHA: ${{ env.SHA }}
+          # 内嵌字体（与官方一致）。工作区根目录下的 craft-fonts 是上面刚检出的。
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
           # 不设置签名密钥 → 上游 sign.ps1 会打印警告并以 exit 0 跳过（不打签名）
         run: ./packaging/windows/package.ps1 -Arch x64
 
-      # 关键校验③：产出 MSI 里确实带上了「自选安装位置」界面。
-      # 原理：对话框名与属性名在 MSI 里以字符串形式存在，可直接做字节查找。
+      # 关键校验③：产出 MSI 里确实带上了「自选安装位置」界面，且内嵌字体与官方一致。
+      # 原理：对话框名与属性名是 MSI 表里的真实值，会以字符串留在文件中，可直接字节查找。
+      # 注意：**不要**拿 <UI Id="..."> 那个标识符来查 —— 它是 WiX 的编译期符号，解析后
+      # 并不会作为字符串留在 MSI 里（第一版就是这么误判，把一个好包卡住了）。
+      # 下面这几个字符串都在本机用同版本 WiX 的编译产物实测过可以按字节查到。
       - name: 校验 MSI 带上了「自选安装位置」界面
         shell: bash
         run: |
@@ -341,7 +364,7 @@ jobs:
           test -n "$msi" || { echo "::error::找不到产出 MSI"; exit 1; }
           echo "检查 $msi（$(du -h "$msi" | cut -f1)）"
           fail=0
-          for s in "InstallLocationBrowser" "WIXUI_INSTALLDIR" "_BrowseProperty" "LocationPath" "$UI_ID"; do
+          for s in InstallLocationBrowser LocationPath LocationBrowse WIXUI_INSTALLDIR _BrowseProperty SetTargetPath DirectoryListUp; do
             if LC_ALL=C grep -a -q -F -e "$s" "$msi"; then
               echo "  ✅ $s"
             else
@@ -352,6 +375,19 @@ jobs:
           if [ "$fail" -ne 0 ]; then
             echo "::error::MSI 里没有「自选安装位置」界面 —— 注入没生效，已中止发布。"
             exit 1
+          fi
+
+          # 顺带确认内嵌字体确实被带上（即 CRAFT_FONTS_DIR 生效、与官方一致）。
+          # 判据：便携版里随附的字体许可文件 —— 上游 package.ps1 会为 craft-fonts 下的
+          # 每个字体目录复制一份 OFL-<目录>.txt。
+          zp="$(find src/dist/release -name '*.zip' -type f | head -1)"
+          if [ -n "$zp" ]; then
+            n="$(LC_ALL=C grep -a -o -E 'OFL-[a-z0-9-]+\.txt' "$zp" | sort -u | grep -c . || true)"
+            echo "  便携版里的字体许可文件种类：$n"
+            if [ "$n" -lt 3 ]; then
+              echo "::error::便携版里没有字体许可文件，说明 CRAFT_FONTS_DIR 没生效，包会和官方不一致。"
+              exit 1
+            fi
           fi
 
       # 关键校验④：产出 exe 里确实含简体中文译文。
