@@ -24,16 +24,23 @@
 | `photocraft.wxs` | 插入一行 `<UIRef Id="PhotocraftInstallerUI" />`（锚点命中数必须恰好 1，否则构建失败） |
 | `package.ps1` | 把 `installer-ui.wxs` 加进 `wix build` 的源文件列表（原地替换，不增行） |
 
-### 中文字体：故意不动
+### 字体：与官方发版完全一致，且中文不需要嵌入字体
 
-PhotoCraft 的界面中文字体是**运行时从系统读取**的（Windows 上取 `C:\Windows\Fonts\msyh.ttc`，
-即微软雅黑），见上游 `crates/text/src/cjk.rs`。所以：
+**中文字体：不嵌入，运行时读系统字体。** PhotoCraft 的界面中文字体来自系统
+（Windows 上取 `C:\Windows\Fonts\msyh.ttc`，即微软雅黑），见上游 `crates/text/src/cjk.rs`。
+界面西文主字体 `Inter` 则是程序自带的（`assets/fonts/`），与字体仓库无关。
+所以中文显示正常、观感就是系统雅黑，**不需要为中文嵌入任何字体**。
 
-- 不需要嵌入任何中文字体，也不需要替换字体
-- 中文显示正常、观感就是系统雅黑
-- 体积比嵌入 CJK 字体省约 8 MB（作为对照，姊妹项目 [pdfcraft-zh](https://github.com/awpde/pdfcraft-zh) 因为上游机制不同，必须嵌入字体）
+（对照说明：姊妹项目 [pdfcraft-zh](https://github.com/awpde/pdfcraft-zh) 的上游没有这个系统字体机制，
+所以那边**必须**嵌入 CJK 字体才能正常显示中文。）
 
-界面译文（`crates/ui-egui/src/i18n/zh-hans.tsv`）是上游用 `include_str!` 编进二进制的，
+**但日文字体仍按官方配置嵌入。** 本流水线检出官方 `release.yml` 锁定的同一个
+`craft-fonts` commit（`abb83316…`，内容是日文字体）并设 `CRAFT_FONTS_REQUIRED=1`。
+这样做的意义是：交付物与官方包**只差安装界面这一处**，不做无谓的偏离——
+少了它日文界面会退回系统日文字体，体积小约 21 MB 但不再与官方一致。
+（上游本身支持无字体构建，所以这是个可切换的取舍，不是硬性要求。）
+
+界面译文（`crates/ui-egui/src/i18n/zh-hans.tsv`）由上游用 `include_str!` 编进二进制，
 上游 **v0.3.0 起就自带简体中文**，所以只要上游有中文词条，构建出来的包就是中文界面。
 
 ## 构建流程里的防呆
@@ -44,7 +51,8 @@ PhotoCraft 的界面中文字体是**运行时从系统读取**的（Windows 上
 2. **两处注入的锚点存在且唯一** —— 上游改了这两个文件会立刻报错，提示人工跟进
 3. **检出的源码里中文词条内容正常** —— 行数与中文行数达标
 4. **产出 MSI 里确实带上了自选安装位置界面** —— 字节查找对话框名与属性名
-5. **产出 exe 里确实含简体中文译文** —— 从同一次检出的词条里抽样，在 exe 里做字节查找
+5. **便携版里确实带上了内嵌字体的许可文件** —— 即 `CRAFT_FONTS_DIR` 生效、与官方一致
+6. **产出 exe 里确实含简体中文译文** —— 从同一次检出的词条里抽样，在 exe 里做字节查找
 
 ## 自动跟版
 
