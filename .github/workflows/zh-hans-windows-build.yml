@@ -456,7 +456,8 @@ jobs:
           - 源码来源：\`$UPSTREAM @ $REF\`
           - commit：\`$SHA\`
           - 完整版本号：\`$FULL_VERSION\`（后缀只出现在文件名里）
-          - 界面中文字体：\`使用系统字体（Windows 上为微软雅黑）\` —— 与官方包一致，未嵌入字体
+          - 界面中文字体：\`系统字体（Windows 上为微软雅黑）\` —— 中文不需要嵌入字体
+          - 内嵌字体：与官方发版相同的 \`craft-fonts\` 字形集合（日文字体）；除安装界面外，本包与官方一致
           - 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PhotoCraft\`）
           - 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可
           - 与官方同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版
