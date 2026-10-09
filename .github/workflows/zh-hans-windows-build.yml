@@ -1,0 +1,447 @@
+name: 构建简体中文版 (Windows)
+
+# 从上游源码编译 PhotoCraft 的简体中文版 Windows 安装包（MSI）+ 便携版 zip。
+#
+# 与姊妹项目 PdfCraft 的方案相比，这个工作流**不处理字体**：
+#   PhotoCraft 的界面中文字体是运行时从系统读取的（Windows 上取 C:\Windows\Fonts\msyh.ttc，
+#   即微软雅黑），见 crates/text/src/cjk.rs。所以不需要嵌入任何中文字体，
+#   既不用换字体也不用校验字体 —— 省掉约 8 MB 体积和 4 个步骤。
+#
+# 这里唯一对上游交付物的改动是「安装界面支持自选安装位置」：
+#   上游 packaging/windows/photocraft.wxs 本身没有任何界面定义，安装包只有 Windows
+#   最简进度界面，固定装到 C:\Program Files\PhotoCraft。本工作流通过两处**极小注入**
+#   把 overrides/installer-ui.wxs 接上去，不改动上游 wxs 的其余内容（文件关联、注册表等），
+#   以免上游将来新增内容被我们覆盖掉。两处注入都带锚点存在性与唯一性校验。
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: '上游分支或 tag（默认 main；填旧 tag 可能不含中文词条会被跳过）'
+        required: false
+        default: 'main'
+        type: string
+      version_suffix:
+        description: '版本后缀，仅用于文件名，避免和官方包混淆'
+        required: false
+        default: 'zh.1'
+        type: string
+      make_release:
+        description: '构建成功后创建 / 更新 Release'
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # 每天自动跟版：UTC 22:00 = 北京时间 06:00
+    - cron: '0 22 * * *'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: storytold/photocraft
+  # 界面译文所在的文件。没有它就说明这个版本还是英文界面，直接跳过构建。
+  ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
+
+  # ---- 「自选安装位置」注入参数 ------------------------------------------------------------
+  # 我们的界面文件（在**本仓库**里）与它要放到的位置（上游源码树里）。
+  OUR_UI: overrides/installer-ui.wxs
+  UI_DEST: packaging/windows/installer-ui.wxs
+  # 界面定义的 Id，注入到上游 wxs 的是 <UIRef Id="..." />。
+  UI_ID: PhotocraftInstallerUI
+  # 注入锚点，命中数必须**恰好 1**，否则构建失败（说明上游改了这两处，需要人工跟进）。
+  # 1) 上游 wxs：在这一行之前插入 UIRef。
+  WXS_ANCHOR: ProgramFiles6432Folder
+  # 2) 上游 package.ps1：在 `wix build (... 'photocraft.wxs')` 之后补上我们的界面文件。
+  PS1_ANCHOR: "'photocraft.wxs') -arch"
+
+concurrency:
+  group: zh-hans-windows
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 确定构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      sha: ${{ steps.r.outputs.sha }}
+      short_sha: ${{ steps.r.outputs.short_sha }}
+      version_suffix: ${{ steps.r.outputs.version_suffix }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+      should_build: ${{ steps.r.outputs.should_build }}
+      make_release: ${{ steps.r.outputs.make_release }}
+      reason: ${{ steps.r.outputs.reason }}
+    steps:
+      - name: 解析分支 / 版本并校验中文词条
+        id: r
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
+          INPUT_SUFFIX: ${{ inputs.version_suffix }}
+          INPUT_RELEASE: ${{ inputs.make_release }}
+        run: |
+          set -uo pipefail
+
+          skip() {
+            echo "$1"
+            {
+              echo "should_build=false"
+              echo "reason=$1"
+              echo "ref=${ref:-}"
+              echo "sha=${sha:-}"
+              echo "short_sha=${short:-}"
+              echo "version_suffix=${suffix:-zh.1}"
+              echo "release_tag="
+              echo "make_release=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          ref=""; sha=""; short=""
+
+          if [ -n "${INPUT_REF:-}" ]; then
+            # ---- 手动触发 ----
+            ref="$INPUT_REF"
+            suffix="${INPUT_SUFFIX:-zh.1}"
+            make_release="${INPUT_RELEASE:-true}"
+            reason="手动构建 ref=$ref"
+          else
+            # ---- 定时触发：跟随上游最新 Release ----
+            ref="$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            suffix="zh.1"
+            make_release="true"
+            if [ -z "$ref" ]; then
+              skip "上游还没有 Release，跳过"
+            fi
+            reason="定时跟版：上游最新 Release $ref"
+          fi
+
+          sha="$(gh api "repos/$UPSTREAM/commits/$ref" --jq .sha 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
+            skip "找不到上游 ref '$ref'"
+          fi
+          short="${sha:0:7}"
+
+          # 关键校验①：这个 ref 到底有没有简体中文词条（防止产出「英文界面的中文版」）
+          if ! gh api "repos/$UPSTREAM/contents/$ZH_CATALOG?ref=$ref" >/dev/null 2>&1; then
+            echo "::notice::上游 ref '$ref' 不含 $ZH_CATALOG，构建出来仍是英文界面，已跳过。"
+            echo "::notice::上游的早期版本（如 v0.2.0）属于这种情况；请改用 main 分支，或等上游发版。"
+            skip "ref '$ref' 不含简体中文词条，跳过构建"
+          fi
+
+          # Release 标签：定时跟版按上游 tag 去重；手动构建带上 commit 短哈希
+          safe_ref="$(printf '%s' "$ref" | tr '/' '-')"
+          if [ -n "${INPUT_REF:-}" ]; then
+            release_tag="zh-hans-${safe_ref}-${short}"
+          else
+            release_tag="zh-hans-${safe_ref}"
+          fi
+
+          {
+            echo "should_build=true"
+            echo "reason=$reason"
+            echo "ref=$ref"
+            echo "sha=$sha"
+            echo "short_sha=$short"
+            echo "version_suffix=$suffix"
+            echo "release_tag=$release_tag"
+            echo "make_release=$make_release"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 中文版构建目标"
+            echo ""
+            echo "- 上游 ref：\`$ref\`"
+            echo "- commit：\`$sha\`"
+            echo "- 版本后缀：\`$suffix\`"
+            echo "- Release 标签：\`$release_tag\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    name: 保活（防止定时构建被 GitHub 停用）
+    # 公开仓库连续 60 天没有任何提交时，GitHub 会「悄悄」停用定时任务，不通知。
+    # 而这个仓库平时不会产生提交（编译用的代码是从上游现拉的），正好会踩中这条规则。
+    # 所以定时任务每次运行时顺便看一眼：距上次提交超过 50 天就补一个空提交，把计时清零。
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 距上次提交超过 50 天则补一个空提交
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          last="$(gh api "repos/${{ github.repository }}/commits?per_page=1" --jq '.[0].commit.committer.date' 2>/dev/null || true)"
+          if [ -z "$last" ]; then
+            echo "::warning::读不到最近提交时间，跳过保活"
+            exit 0
+          fi
+          days=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
+          echo "最近一次提交在 $days 天前（$last）"
+          if [ "$days" -lt 50 ]; then
+            echo "还不需要保活"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "保活：重置定时任务计时（超过 50 天没有提交）"
+          git push
+          echo "::notice::已补一个空提交，定时任务计时已重置"
+
+  build:
+    name: 构建 Windows x64 中文安装包
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: windows-latest
+    env:
+      REF: ${{ needs.resolve.outputs.ref }}
+      SHA: ${{ needs.resolve.outputs.sha }}
+      SUFFIX: ${{ needs.resolve.outputs.version_suffix }}
+      TAG: ${{ needs.resolve.outputs.release_tag }}
+      MAKE_RELEASE: ${{ needs.resolve.outputs.make_release }}
+    steps:
+      - name: 说明
+        shell: bash
+        run: |
+          echo "上游：$UPSTREAM @ $REF（$SHA）"
+          echo "原因：${{ needs.resolve.outputs.reason }}"
+
+      # 上游源码
+      - name: 拉取上游源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ env.REF }}
+          path: src
+          fetch-depth: 1
+
+      # 本仓库：只为取 overrides/installer-ui.wxs
+      - name: 拉取本仓库（只为取安装界面覆盖文件）
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          fetch-depth: 1
+
+      # 把我们的安装界面接上去：两处极小注入 + 复制界面文件本身。
+      # 每处都先校验锚点存在且唯一，并在注入后复查，任何一步不符就红着失败，
+      # 不会静默产出一个「不能自选安装路径」的包。
+      - name: 应用「自选安装位置」界面
+        shell: bash
+        run: |
+          set -euo pipefail
+          wxs="src/packaging/windows/photocraft.wxs"
+          ps1="src/packaging/windows/package.ps1"
+          ui="src/$UI_DEST"
+
+          test -f "$wxs" || { echo "::error::上游没有 $wxs（目录结构可能变了）"; exit 1; }
+          test -f "$ps1" || { echo "::error::上游没有 $ps1（目录结构可能变了）"; exit 1; }
+          test -f "builder/$OUR_UI" || { echo "::error::本仓库缺少 $OUR_UI"; exit 1; }
+
+          # ---- 注入 1/2：在 photocraft.wxs 里声明 UIRef ----
+          n="$(grep -c -F "$WXS_ANCHOR" "$wxs" || true)"
+          echo "wxs 锚点 \"$WXS_ANCHOR\" 命中 $n 次（应为 1）"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::上游 $wxs 的锚点命中 $n 次，不再是 1 次。上游改过这个文件，需要人工确认后再更新注入位置。"
+            exit 1
+          fi
+          if grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs"; then
+            echo "::error::上游 wxs 里已经有 <UIRef Id=\"$UI_ID\" />，说明上游自己加了界面，需要重新评估。"
+            exit 1
+          fi
+          ins='    <UIRef Id="'"$UI_ID"'" />'
+          awk -v anchor="$WXS_ANCHOR" -v ins="$ins" 'index($0,anchor)>0 { print ins } { print }' "$wxs" > "$wxs.new"
+          mv "$wxs.new" "$wxs"
+          grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs" || { echo "::error::UIRef 注入失败"; exit 1; }
+          echo "  ✅ 已注入 <UIRef Id=\"$UI_ID\" />"
+
+          # ---- 注入 2/2：把界面文件加进 wix build 的源文件列表 ----
+          n="$(grep -c -F "$PS1_ANCHOR" "$ps1" || true)"
+          echo "package.ps1 锚点命中 $n 次（应为 1）"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::上游 $ps1 的 wix build 调用行变了，锚点命中 $n 次。需要人工确认后再更新注入逻辑。"
+            exit 1
+          fi
+          sed "s|${PS1_ANCHOR}|${PS1_ANCHOR% -arch} (Join-Path \$PSScriptRoot 'installer-ui.wxs') -arch|" \
+            "$ps1" > "$ps1.new"
+          mv "$ps1.new" "$ps1"
+          grep -q -F "'installer-ui.wxs')" "$ps1" || { echo "::error::package.ps1 注入失败"; exit 1; }
+          echo "  ✅ package.ps1 的 wix build 现在包含我们的界面文件："
+          grep -n -A3 'wix build' "$ps1" | sed 's/^/      /'
+
+          # ---- 复制界面文件本体 ----
+          mkdir -p "$(dirname "$ui")"
+          cp "builder/$OUR_UI" "$ui"
+          echo "  ✅ 界面文件已就位：$ui（$(wc -c < "$ui") 字节）"
+
+      - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 cargo 产物（大幅缩短重复构建时间）
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+          key: zh-hans-windows-x64
+
+      # 关键校验②：真正检出的源码里必须有简体中文词条，且内容看起来是真中文。
+      - name: 校验中文词条确实存在
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat_file="src/$ZH_CATALOG"
+          test -s "$cat_file" || { echo "::error::找不到中文词条文件 $cat_file"; exit 1; }
+          lines="$(grep -c '' "$cat_file")"
+          # 注意：用 [^ -~] 而不是 grep -P，因为 Git Bash 自带的 grep 不一定编译了 PCRE 支持。
+          # 在 C 区域下它匹配任何非可打印 ASCII 字节，用来统计「含中文的行数」足够了。
+          nonascii="$(LC_ALL=C grep -c '[^ -~]' "$cat_file" || true)"
+          echo "词条文件：$cat_file —— $lines 行，其中含非 ASCII（中文）的行 $nonascii 行"
+          if [ "$nonascii" -lt 100 ]; then
+            echo "::error::词条里的中文内容太少（仅 $nonascii 行），疑似异常，已中止。"
+            exit 1
+          fi
+
+      - name: 安装 WiX 5（用于生成 MSI）
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: 生成带后缀的版本号
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(grep -A5 '^\[workspace.package\]' src/Cargo.toml | grep -m1 '^version' | sed 's/.*"\(.*\)".*/\1/')"
+          if [ -z "$base" ]; then echo "::error::无法从 Cargo.toml 读取版本号"; exit 1; fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "full=${base}-${SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "基础版本号 $base，完整版本号 ${base}-${SUFFIX}（MSI 产品号取 $base）"
+
+      - name: 编译并打包（调用官方 package.ps1：MSI + 便携版 zip）
+        shell: pwsh
+        working-directory: src
+        env:
+          PHOTOCRAFT_VERSION: ${{ steps.v.outputs.full }}
+          PHOTOCRAFT_BUILD_SHA: ${{ env.SHA }}
+          # 不设置签名密钥 → 上游 sign.ps1 会打印警告并以 exit 0 跳过（不打签名）
+        run: ./packaging/windows/package.ps1 -Arch x64
+
+      # 关键校验③：产出 MSI 里确实带上了「自选安装位置」界面。
+      # 原理：对话框名与属性名在 MSI 里以字符串形式存在，可直接做字节查找。
+      - name: 校验 MSI 带上了「自选安装位置」界面
+        shell: bash
+        run: |
+          set -euo pipefail
+          msi="$(find src/dist/release -name '*.msi' -type f | head -1)"
+          test -n "$msi" || { echo "::error::找不到产出 MSI"; exit 1; }
+          echo "检查 $msi（$(du -h "$msi" | cut -f1)）"
+          fail=0
+          for s in "InstallLocationBrowser" "WIXUI_INSTALLDIR" "_BrowseProperty" "LocationPath" "$UI_ID"; do
+            if LC_ALL=C grep -a -q -F -e "$s" "$msi"; then
+              echo "  ✅ $s"
+            else
+              echo "  ❌ $s"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::MSI 里没有「自选安装位置」界面 —— 注入没生效，已中止发布。"
+            exit 1
+          fi
+
+      # 关键校验④：产出 exe 里确实含简体中文译文。
+      # PhotoCraft 的译文是 include_str!("zh-hans.tsv") 编进二进制的，所以词条里的每一行
+      # 都会原样出现在 exe 里。这里从**同一次检出的词条文件**里取若干条译文做字节查找：
+      # 自适应上游改词条，也不依赖任何额外工具。
+      - name: 校验 exe 内确实含简体中文译文
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="$(find src/target -path '*release*' -name 'photocraft.exe' -type f 2>/dev/null | head -1)"
+          test -n "$exe" || { echo "::error::找不到编译出的 photocraft.exe"; exit 1; }
+          cat_file="src/$ZH_CATALOG"
+          echo "检查 $exe（$(du -h "$exe" | cut -f1)）是否含简体中文译文"
+
+          # 取「译文列」较长的若干条（较长可避免偶然命中短词）
+          samples="zh-samples.txt"
+          LC_ALL=C awk -F'\t' '$1 !~ /^#/ && NF >= 3 && length($3) >= 12 { print $3 }' "$cat_file" | head -12 > "$samples"
+          total="$(grep -c . "$samples" || true)"
+          if [ "$total" -lt 5 ]; then
+            echo "::error::从词条里取到的样本太少（$total 条），无法校验"; exit 1
+          fi
+          ok=0
+          while IFS= read -r s; do
+            [ -n "$s" ] || continue
+            if LC_ALL=C grep -a -q -F -e "$s" "$exe"; then ok=$((ok+1)); fi
+          done < "$samples"
+          echo "  抽查 $total 条译文，命中 $ok 条"
+          if [ "$ok" -lt 5 ]; then
+            echo "::error::exe 里找不到简体中文译文 —— 界面会是英文，已中止发布。"
+            echo "::error::请检查 $ZH_CATALOG 是否真的被 include_str! 编进二进制。"
+            exit 1
+          fi
+          echo "✅ 简体中文译文已编入 exe"
+
+      - name: 列出产物
+        shell: bash
+        run: ls -la src/dist/release/ | sed 's/^/  /'
+
+      - name: 上传为 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-zh-hans-${{ needs.resolve.outputs.short_sha }}-windows-x64
+          path: src/dist/release/*
+          if-no-files-found: error
+
+      - name: 创建 / 更新 Release
+        if: env.MAKE_RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 关键：运行目录不是 git 仓库（源码是从上游拉的），不显式指定仓库，
+          # gh release 会报 "fatal: not a git repository"。
+          GH_REPO: ${{ github.repository }}
+          BASE_VERSION: ${{ steps.v.outputs.base }}
+          FULL_VERSION: ${{ steps.v.outputs.full }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+
+          cat > "$notes" <<EOF
+          PhotoCraft 简体中文版（Windows x64）
+
+          由上游源码自动编译。界面译文已编译进二进制，无需任何额外语言包。
+
+          - 源码来源：\`$UPSTREAM @ $REF\`
+          - commit：\`$SHA\`
+          - 完整版本号：\`$FULL_VERSION\`（后缀只出现在文件名里）
+          - 界面中文字体：\`使用系统字体（Windows 上为微软雅黑）\` —— 与官方包一致，未嵌入字体
+          - 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PhotoCraft\`）
+          - 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可
+          - 与官方同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版
+
+          ## 安装后如何切换到中文
+
+          一般无需操作：应用会自动跟随系统语言（Windows 用户区域为中文时即为中文界面）。
+          如仍是英文，可在设置里把界面语言改为「简体中文」。
+
+          ## 许可证
+
+          PhotoCraft 采用 Apache-2.0 许可，字体不随本包分发（使用系统字体）。
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖其中的产物。"
+            gh release upload "$TAG" src/dist/release/*.msi src/dist/release/*.zip --clobber
+          else
+            gh release create "$TAG" \
+              --title "PhotoCraft 简体中文版 ${FULL_VERSION} (${SHA:0:7})" \
+              --notes-file "$notes" \
+              --latest \
+              src/dist/release/*.msi src/dist/release/*.zip
+          fi
