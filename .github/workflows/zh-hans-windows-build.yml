@@ -423,15 +423,85 @@ jobs:
           fi
           echo "✅ 简体中文译文已编入 exe"
 
+      # 合规：把许可证与声明随分发一起给出。
+      # 上游 package.ps1 会把仓库根目录的 README.md / LICENSE / LICENSE-MIT / LICENSE-APACHE
+      # 复制进便携版 zip，但**不含 NOTICE**；而 NOTICE 里既有版权与商标声明，也有第三方组件清单
+      # （Apache-2.0 第 4(d) 条要求随分发提供其内容）。这里把整套文件单独放成 Release 附件，
+      # 并额外生成一份「本构建改了什么」的说明，让「非官方构建」这一点在包外也能看到。
+      - name: 生成许可证与改动声明
+        shell: bash
+        working-directory: src
+        env:
+          SHA: ${{ env.SHA }}
+          REF: ${{ env.REF }}
+        run: |
+          set -euo pipefail
+          dir="dist/release/licenses"
+          rm -rf "$dir"; mkdir -p "$dir"
+
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE NOTICE; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              LICENSE)        cp "$f" "$dir/LICENSE.txt" ;;
+              LICENSE-MIT)    cp "$f" "$dir/LICENSE-MIT.txt" ;;
+              LICENSE-APACHE) cp "$f" "$dir/LICENSE-APACHE.txt" ;;
+              NOTICE)         cp "$f" "$dir/NOTICE.txt" ;;
+            esac
+            echo "  随附 $f"
+          done
+          test -s "$dir/LICENSE-MIT.txt" || { echo "::error::找不到上游 LICENSE-MIT —— 再分发必须随附许可证"; exit 1; }
+          [ -s "$dir/NOTICE.txt" ] || echo "::warning::上游仓库没有 NOTICE 文件"
+
+          cat > "$dir/UNOFFICIAL-BUILD-zh-CN.txt" <<NOTICE_EOF
+          这是基于 PhotoCraft 的【非官方】简体中文构建，不是官方发布。
+
+          程序主体为原作者（PhotoCraft contributors）的作品，采用 Apache-2.0 许可
+          （全文见同目录 LICENSE-APACHE.txt / LICENSE-MIT.txt，版权、商标与第三方组件声明见 NOTICE.txt）。
+
+          本构建只修改了构建配置与安装界面，未修改程序源码：
+            1) 安装界面新增「选择安装位置」：欢迎页可直接改路径或点 Browse... 浏览。
+            2) 界面中文字体沿用系统字体（Windows 上为微软雅黑），与官方包一致；
+               随包内嵌的 craft-fonts 字形集合也与官方发版保持一致。
+
+          源码：storytold/photocraft @ ${REF:-unknown} (${SHA:-unknown})
+          构建时间：$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          由第三方自动构建，与原项目作者无隶属、赞助或背书关系。本构建未做代码签名。
+
+          ----------------------------------------------------------------------
+
+          This is an UNOFFICIAL Simplified-Chinese build of PhotoCraft. It is NOT an official release.
+
+          The application is the work of the PhotoCraft contributors, licensed under Apache-2.0
+          (see LICENSE-APACHE.txt / LICENSE-MIT.txt; copyright, trademark and third-party
+          notices in NOTICE.txt).
+
+          Only build configuration and the installer UI were changed; no program source was modified:
+            1) The installer gained a "choose install location" page.
+            2) The Simplified-Chinese UI font remains the system font (Microsoft YaHei on Windows),
+               and the embedded craft-fonts set matches the official release.
+
+          Source: storytold/photocraft @ ${REF:-unknown} (${SHA:-unknown})
+          Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Third-party automated build; not affiliated with or endorsed by the original authors.
+          Not code-signed.
+          NOTICE_EOF
+
+          test -s "$dir/UNOFFICIAL-BUILD-zh-CN.txt" || { echo "::error::改动声明生成失败（文件为空）"; exit 1; }
+          ls -la "$dir"
+          echo "✅ 许可证与改动声明已生成"
+
       - name: 列出产物
         shell: bash
-        run: ls -la src/dist/release/ | sed 's/^/  /'
+        run: ls -la src/dist/release/ src/dist/release/licenses/ | sed 's/^/  /'
 
       - name: 上传为 Actions 产物
         uses: actions/upload-artifact@v4
         with:
           name: photocraft-zh-hans-${{ needs.resolve.outputs.short_sha }}-windows-x64
-          path: src/dist/release/*
+          path: |
+            src/dist/release/*.msi
+            src/dist/release/*.zip
+            src/dist/release/licenses/*
           if-no-files-found: error
 
       - name: 创建 / 更新 Release
@@ -451,6 +521,11 @@ jobs:
           cat > "$notes" <<EOF
           PhotoCraft 简体中文版（Windows x64）
 
+          > ⚠️ **非官方构建（unofficial build）** —— 本安装包由第三方自动构建，**不是官方发布**，
+          > 与原项目作者不存在隶属、赞助或背书关系。程序主体为原作者（PhotoCraft contributors）
+          > 的作品，采用 Apache-2.0 许可；本构建**只修改了构建配置与安装界面，未修改程序源码**。
+          > 具体改动见本 Release 附带的 UNOFFICIAL-BUILD-zh-CN.txt。
+
           由上游源码自动编译。界面译文已编译进二进制，无需任何额外语言包。
 
           - 源码来源：\`$UPSTREAM @ $REF\`
@@ -467,18 +542,34 @@ jobs:
           一般无需操作：应用会自动跟随系统语言（Windows 用户区域为中文时即为中文界面）。
           如仍是英文，可在设置里把界面语言改为「简体中文」。
 
-          ## 许可证
+          ## 许可证、署名与改动声明
 
-          PhotoCraft 采用 Apache-2.0 许可，字体不随本包分发（使用系统字体）。
+          PhotoCraft 采用 Apache-2.0 许可（仓库内同时提供 MIT 许可文本）。本 Release 附带以下文件，
+          可单独下载：
+
+          | 文件 | 内容 |
+          |---|---|
+          | LICENSE-APACHE.txt、LICENSE-MIT.txt | 上游许可证全文 |
+          | NOTICE.txt | 上游版权、商标与第三方组件许可声明 |
+          | UNOFFICIAL-BUILD-zh-CN.txt | 本构建的改动说明（非官方声明）|
+
+          便携版 zip 内同时含 LICENSE-MIT、LICENSE-APACHE、README.md 及内嵌字体的许可文件。
+
+          界面中文字体使用系统字体（Windows 上为微软雅黑），因此本包不分发中文字体。
+
+          本构建为非官方第三方构建，与原项目作者无隶属、赞助或背书关系；
+          名称 PhotoCraft 仅用于说明本软件来源。
           EOF
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，覆盖其中的产物。"
-            gh release upload "$TAG" src/dist/release/*.msi src/dist/release/*.zip --clobber
+            echo "Release $TAG 已存在，覆盖其中的产物并刷新说明。"
+            gh release upload "$TAG" \
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/* --clobber
+            gh release edit "$TAG" --notes-file "$notes"
           else
             gh release create "$TAG" \
-              --title "PhotoCraft 简体中文版 ${FULL_VERSION} (${SHA:0:7})" \
+              --title "PhotoCraft 简体中文版 ${FULL_VERSION} (${SHA:0:7}) · 非官方构建" \
               --notes-file "$notes" \
               --latest \
-              src/dist/release/*.msi src/dist/release/*.zip
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/*
           fi
