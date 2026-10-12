@@ -3,19 +3,16 @@
      也不需要自定义动作 DLL）。
 
      与 PdfCraft 那个姊妹项目的做法的区别（重要）：
-       上游 photocraft 的 packaging/windows/photocraft.wxs **本身没有任何界面定义**
-       （没有 <UIRef>、没有对话框），安装包只有 Windows 最简进度界面，装到固定的
-       C:\Program Files\PhotoCraft。所以：
-
-       1. 这里定义的是一个**新增**的具名 UI（PhotocraftInstallerUI），不是替换上游界面。
-       2. 构建时由工作流做两处**极小注入**把它接上：
-            - photocraft.wxs：插入一行 <UIRef Id="PhotocraftInstallerUI" />
+       上游 photocraft v0.7.0 起自带完整英文安装向导（WixUI_InstallDir + <UI> Publish 块 +
+       INSTALLFOLDER Property）。构建时由工作流做**极小注入**把它接上：
+            - photocraft.wxs：把 <ui:WixUI Id="WixUI_InstallDir"...> 整行替换为
+              <UIRef Id="PhotocraftInstallerUI" />，并删除其 <UI>..</UI> Publish 块；
             - package.ps1：把本文件加进 `wix build` 的源文件列表
-          这样上游的 wxs 其余内容（文件关联、注册表、组件）保持原样，上游将来改动不会与我们冲突。
-       3. 上游没有 test-msi.ps1（PdfCraft 有，会逐项核对界面文案），所以这里没有「不许改文案」的约束。
+          这样上游 wxs 其余内容（文件关联、注册表、组件）保持原样，上游将来改动不会与我们冲突。
 
-     INSTALLFOLDER 必须标记 Secure：用户在未提权的界面上选的路径，要能穿过提权边界
-     到达真正执行安装的进程，否则 Windows Installer 会把它丢掉。 -->
+     注：上游 wxs 自带 <Property Id="INSTALLFOLDER">（含 RegistrySearch 记住上次安装路径）；
+     构建注入会给它补上 Secure="yes"（用户在未提权的界面上选的路径要能穿过提权边界，
+     到达真正执行安装的进程），因此本文件不再重复定义 INSTALLFOLDER。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <UI Id="PhotocraftInstallerUI">
@@ -28,8 +25,6 @@
       <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
       <!-- 浏览对话框内部用这个属性传递「要浏览哪个目录」，写法照抄 WiX 官方 WixUI。 -->
       <Property Id="_BrowseProperty" Value="INSTALLFOLDER" />
-      <!-- 关键：让用户选的路径能穿过提权边界，到达真正执行安装的那个进程。 -->
-      <Property Id="INSTALLFOLDER" Secure="yes" />
 
       <Dialog Id="InstallWelcome" Width="370" Height="195" Title="[ProductName] Setup">
         <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Install [ProductName]" />
