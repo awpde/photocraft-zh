@@ -8,10 +8,12 @@
 #   既不用换字体也不用校验字体 —— 省掉约 8 MB 体积和 4 个步骤。
 #
 # 这里唯一对上游交付物的改动是「安装界面支持自选安装位置」：
-#   上游 packaging/windows/photocraft.wxs 本身没有任何界面定义，安装包只有 Windows
-#   最简进度界面，固定装到 C:\Program Files\PhotoCraft。本工作流通过两处**极小注入**
-#   把 overrides/installer-ui.wxs 接上去，不改动上游 wxs 的其余内容（文件关联、注册表等），
-#   以免上游将来新增内容被我们覆盖掉。两处注入都带锚点存在性与唯一性校验。
+#   上游 v0.7.0 起 photocraft.wxs 自带完整英文安装向导（WixUI_InstallDir + <UI> Publish 块 +
+#   INSTALLFOLDER Property），符号与我们的中文界面冲突（WIX0091 重复）。本工作流通过**极小注入**
+#   把 overrides/installer-ui.wxs 接上去：将上游 WixUI_InstallDir 整行替换为
+#   <UIRef Id="PhotocraftInstallerUI" />、删除其 <UI>..</UI> Publish 块、给 INSTALLFOLDER
+#   Property 补上 Secure="yes"，不改动上游 wxs 其余内容（文件关联、注册表等）。
+#   每次注入都带锚点存在性与唯一性校验。
 
 on:
   workflow_dispatch:
@@ -56,10 +58,12 @@ env:
   UI_DEST: packaging/windows/installer-ui.wxs
   # 界面定义的 Id，注入到上游 wxs 的是 <UIRef Id="..." />。
   UI_ID: PhotocraftInstallerUI
-  # 注入锚点，命中数必须**恰好 1**，否则构建失败（说明上游改了这两处，需要人工跟进）。
-  # 1) 上游 wxs：在这一行之前插入 UIRef。
-  WXS_ANCHOR: ProgramFiles6432Folder
-  # 2) 上游 package.ps1：在 `wix build (... 'photocraft.wxs')` 之后补上我们的界面文件。
+  # 注入锚点，命中数必须**恰好 1**，否则构建失败（说明上游改了这几处，需要人工跟进）。
+  # 1) 上游 wxs：v0.7.0 起自带英文向导，把 <ui:WixUI Id="WixUI_InstallDir"...> 整行替换为 UIRef。
+  WXS_UI_ANCHOR: '<ui:WixUI Id="WixUI_InstallDir"'
+  # 2) 上游 wxs 的 INSTALLFOLDER Property（含 RegistrySearch 记住上次路径）：补上 Secure="yes"。
+  WXS_PROP_ANCHOR: '<Property Id="INSTALLFOLDER">'
+  # 3) 上游 package.ps1：在 `wix build (... 'photocraft.wxs')` 之后补上我们的界面文件。
   PS1_ANCHOR: "'photocraft.wxs') -arch"
 
 concurrency:
@@ -260,22 +264,40 @@ jobs:
           test -f "$ps1" || { echo "::error::上游没有 $ps1（目录结构可能变了）"; exit 1; }
           test -f "builder/$OUR_UI" || { echo "::error::本仓库缺少 $OUR_UI"; exit 1; }
 
-          # ---- 注入 1/2：在 photocraft.wxs 里声明 UIRef ----
-          n="$(grep -c -F "$WXS_ANCHOR" "$wxs" || true)"
-          echo "wxs 锚点 \"$WXS_ANCHOR\" 命中 $n 次（应为 1）"
+          # ---- 注入 1/2：把上游 v0.7.0 自带的英文向导换成我们的中文界面 ----
+          # 上游 wxs 自带 <ui:WixUI Id="WixUI_InstallDir"...> + <UI> Publish 块，符号与我们的
+          # installer-ui.wxs 重复（WIX0091）。这里整行替换 WixUI 为 UIRef、删除 Publish 块、
+          # 给 INSTALLFOLDER Property 补 Secure="yes"（自选路径穿过提权边界必需）。
+          n="$(grep -c -F "$WXS_UI_ANCHOR" "$wxs" || true)"
+          echo "上游 WixUI_InstallDir 锚点命中 $n 次（应为 1）"
           if [ "$n" -ne 1 ]; then
-            echo "::error::上游 $wxs 的锚点命中 $n 次，不再是 1 次。上游改过这个文件，需要人工确认后再更新注入位置。"
+            echo "::error::上游 $wxs 的 $WXS_UI_ANCHOR 命中 $n 次，不再是 1 次。上游改过这个文件，需要人工确认后再更新注入逻辑。"
+            exit 1
+          fi
+          n="$(grep -c -F "$WXS_PROP_ANCHOR" "$wxs" || true)"
+          echo "上游 INSTALLFOLDER Property 锚点命中 $n 次（应为 1）"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::上游 $wxs 的 $WXS_PROP_ANCHOR 命中 $n 次，需要人工确认。"
             exit 1
           fi
           if grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs"; then
             echo "::error::上游 wxs 里已经有 <UIRef Id=\"$UI_ID\" />，说明上游自己加了界面，需要重新评估。"
             exit 1
           fi
-          ins='    <UIRef Id="'"$UI_ID"'" />'
-          awk -v anchor="$WXS_ANCHOR" -v ins="$ins" 'index($0,anchor)>0 { print ins } { print }' "$wxs" > "$wxs.new"
+          awk -v uiid="$UI_ID" '
+            /<ui:WixUI Id="WixUI_InstallDir"/ { print "    <UIRef Id=\"" uiid "\" />"; next }
+            /^[[:space:]]*<UI>$/ { inui=1; next }
+            inui && /<\/UI>/ { inui=0; next }
+            inui { next }
+            /^[[:space:]]*<Property Id="INSTALLFOLDER">/ { print "    <Property Id=\"INSTALLFOLDER\" Secure=\"yes\">"; next }
+            { print }
+          ' "$wxs" > "$wxs.new"
           mv "$wxs.new" "$wxs"
           grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs" || { echo "::error::UIRef 注入失败"; exit 1; }
-          echo "  ✅ 已注入 <UIRef Id=\"$UI_ID\" />"
+          if grep -q -F '<ui:WixUI' "$wxs"; then echo "::error::上游 WixUI_InstallDir 未清除"; exit 1; fi
+          if grep -q -F 'WelcomeDlg' "$wxs"; then echo "::error::上游 Publish 块未清除"; exit 1; fi
+          if grep -q -F "$WXS_PROP_ANCHOR" "$wxs"; then echo "::error::INSTALLFOLDER Secure 注入失败"; exit 1; fi
+          echo "  ✅ 已替换英文向导为 <UIRef Id=\"$UI_ID\" />，并给 INSTALLFOLDER 补上 Secure=yes"
 
           # ---- 注入 2/2：把界面文件加进 wix build 的源文件列表 ----
           n="$(grep -c -F "$PS1_ANCHOR" "$ps1" || true)"
