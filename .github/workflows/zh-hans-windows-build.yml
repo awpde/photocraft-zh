@@ -1,4 +1,4 @@
-name: 构建简体中文版 (Windows)
+﻿name: 构建简体中文版 (Windows)
 
 # 从上游源码编译 PhotoCraft 的简体中文版 Windows 安装包（MSI）+ 便携版 zip。
 #
@@ -326,7 +326,10 @@ jobs:
 
       - name: 安装 WiX 5（用于生成 MSI）
         shell: pwsh
-        run: dotnet tool install --global wix --version 5.0.2
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          # 上游 package.ps1 的 wix build 需要 UI/Util 扩展（v0.6+ 开始），不装会报 WIX0144
+          wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
 
       - name: 生成带后缀的版本号
         id: v
