@@ -423,7 +423,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exe="$(find src/target -path '*release*' -name 'photocraft.exe' -type f 2>/dev/null | head -1)"
+          # 只取 release 顶层的最终二进制。不要用 -path '*release*' 宽匹配：rust-cache 还原后
+          # release/deps 下可能残留旧版 photocraft.exe（不含当前词条译文），误命中会把好包卡住。
+          exe="$(find src/target -path '*/release/photocraft.exe' -type f 2>/dev/null | head -1)"
           test -n "$exe" || { echo "::error::找不到编译出的 photocraft.exe"; exit 1; }
           cat_file="src/$ZH_CATALOG"
           echo "检查 $exe（$(du -h "$exe" | cut -f1)）是否含简体中文译文"
