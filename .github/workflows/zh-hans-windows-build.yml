@@ -416,39 +416,58 @@ jobs:
           fi
 
       # 关键校验④：产出 exe 里确实含简体中文译文。
-      # PhotoCraft 的译文是 include_str!("zh-hans.tsv") 编进二进制的，所以词条里的每一行
-      # 都会原样出现在 exe 里。这里从**同一次检出的词条文件**里取若干条译文做字节查找：
-      # 自适应上游改词条，也不依赖任何额外工具。
+      # 注意：上游 v0.7.0 起 i18n 存储方式变了 —— build.rs 把 src/i18n/*.tsv 用 flate2 最高压缩
+      # 成 OUT_DIR/i18n/<lang>.tsv.deflate，catalog! 宏再 include_bytes! 编进 exe，运行时才 inflate。
+      # 所以 exe 里**不再有明文中文字符串**，旧版「从词条取译文做字节查找」的校验从 v0.7.0 起
+      # 必然误报（好包也会被卡住）。新校验分三层证明：
+      #   1) OUT_DIR 确实生成了 zh-hans.tsv.deflate（build.rs 覆盖到中文词条）；
+      #   2) 该 deflate 解压后与本次检出的 zh-hans.tsv 逐字节一致（编的是这份词条、内容为真中文）；
+      #   3) 取 deflate 数据的中段 32 字节在 exe 里按字节命中（include_bytes! 真把它编进了二进制）。
       - name: 校验 exe 内确实含简体中文译文
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          # 只取 release 顶层的最终二进制。不要用 -path '*release*' 宽匹配：rust-cache 还原后
-          # release/deps 下可能残留旧版 photocraft.exe（不含当前词条译文），误命中会把好包卡住。
-          exe="$(find src/target -path '*/release/photocraft.exe' -type f 2>/dev/null | head -1)"
-          test -n "$exe" || { echo "::error::找不到编译出的 photocraft.exe"; exit 1; }
-          cat_file="src/$ZH_CATALOG"
-          echo "检查 $exe（$(du -h "$exe" | cut -f1)）是否含简体中文译文"
+          $ErrorActionPreference = 'Stop'
+          $rel = 'src/target/x86_64-pc-windows-msvc/release'
+          $exePath = Join-Path $rel 'photocraft.exe'
+          if (-not (Test-Path $exePath)) { throw "找不到编译出的 photocraft.exe：$exePath" }
+          $exe = Get-Item $exePath
+          Write-Host "检查 $($exe.FullName)（$([math]::Round($exe.Length/1MB,1)) MB）是否含简体中文译文"
 
-          # 取「译文列」较长的若干条（较长可避免偶然命中短词）
-          samples="zh-samples.txt"
-          LC_ALL=C awk -F'\t' '$1 !~ /^#/ && NF >= 3 && length($3) >= 12 { print $3 }' "$cat_file" | head -12 > "$samples"
-          total="$(grep -c . "$samples" || true)"
-          if [ "$total" -lt 5 ]; then
-            echo "::error::从词条里取到的样本太少（$total 条），无法校验"; exit 1
-          fi
-          ok=0
-          while IFS= read -r s; do
-            [ -n "$s" ] || continue
-            if LC_ALL=C grep -a -q -F -e "$s" "$exe"; then ok=$((ok+1)); fi
-          done < "$samples"
-          echo "  抽查 $total 条译文，命中 $ok 条"
-          if [ "$ok" -lt 5 ]; then
-            echo "::error::exe 里找不到简体中文译文 —— 界面会是英文，已中止发布。"
-            echo "::error::请检查 $ZH_CATALOG 是否真的被 include_str! 编进二进制。"
-            exit 1
-          fi
-          echo "✅ 简体中文译文已编入 exe"
+          # 1) OUT_DIR 的 deflate 产物
+          $def = Get-ChildItem -Path (Join-Path $rel 'build') -Recurse -Filter 'zh-hans.tsv.deflate' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $def) { throw "找不到 OUT_DIR 的 i18n/zh-hans.tsv.deflate —— build.rs 未生成中文词条压缩产物" }
+          $defBytes = [IO.File]::ReadAllBytes($def.FullName)
+          if ($defBytes.Length -lt 16) { throw "deflate 产物异常过小：$($defBytes.Length) 字节" }
+          Write-Host "  ✅ 找到 deflate 产物：$($def.Name)（$($defBytes.Length) 字节）"
+
+          # 2) 解压（raw deflate）并与检出的词条文件逐字节比对
+          $srcBytes = [IO.File]::ReadAllBytes((Join-Path 'src' $env:ZH_CATALOG))
+          $ms = New-Object IO.MemoryStream(,$defBytes)
+          $ds = New-Object IO.Compression.DeflateStream($ms, [IO.Compression.CompressionMode]::Decompress)
+          $outMs = New-Object IO.MemoryStream
+          $ds.CopyTo($outMs); $ds.Dispose(); $ms.Dispose()
+          $inflated = $outMs.ToArray(); $outMs.Dispose()
+          if ($inflated.Length -ne $srcBytes.Length) { throw "deflate 解压后长度 $($inflated.Length) 与词条文件 $($srcBytes.Length) 不一致" }
+          $bad = -1
+          for ($i = 0; $i -lt $srcBytes.Length; $i++) { if ($inflated[$i] -ne $srcBytes[$i]) { $bad = $i; break } }
+          if ($bad -ge 0) { throw "deflate 解压内容与词条文件不一致（偏移 $bad）" }
+          Write-Host "  ✅ 解压后与检出词条逐字节一致（$($srcBytes.Length) 字节，含简体中文）"
+
+          # 3) deflate 数据窗口在 exe 中按字节命中
+          $winLen = 32
+          $start = [Math]::Max(0, [int]($defBytes.Length / 2) - [int]($winLen / 2))
+          $win = New-Object byte[] $winLen
+          [Array]::Copy($defBytes, $start, $win, 0, $winLen)
+          $exeBytes = [IO.File]::ReadAllBytes($exePath)
+          $found = $false
+          for ($i = 0; $i -le $exeBytes.Length - $winLen; $i++) {
+            $ok = $true
+            for ($j = 0; $j -lt $winLen; $j++) { if ($exeBytes[$i + $j] -ne $win[$j]) { $ok = $false; break } }
+            if ($ok) { $found = $true; break }
+          }
+          if (-not $found) { throw "exe 中找不到 deflate 数据窗口 —— zh-hans 词条未被 include_bytes! 编入二进制" }
+          Write-Host "  ✅ exe 中命中 deflate 数据（偏移 $i）"
+          Write-Host "✅ 简体中文译文已以压缩形式编入 exe"
 
       # 合规：把许可证与声明随分发一起给出。
       # 上游 package.ps1 会把仓库根目录的 README.md / LICENSE / LICENSE-MIT / LICENSE-APACHE
