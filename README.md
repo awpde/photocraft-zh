@@ -87,6 +87,14 @@
 - **覆盖升级**：MSI 使用 `MajorUpgrade AllowSameVersionUpgrades="yes"` 且 `UpgradeCode` 与官方一致，
   所以本包会**直接替换**已安装的官方同版本，不用先手动卸载。
 
+## 维护本仓库
+
+面向接手维护的人 / agent：**[`docs/维护指南.md`](docs/)** —— 里面有上游跟版的处置流程、
+安装界面「极小注入」方案的三个锚点、译文校验逻辑，以及
+**pwsh / PowerShell 5.1 排序规则差异**这个已经让构建连续失败 4 次的坑。
+
+上游更新后请先读那份文档，不要直接改 workflow。
+
 ## 许可、署名与改动声明
 
 PhotoCraft 采用 **Apache-2.0**（仓库内同时提供 MIT 许可文本）。每个 Release 都附带：
