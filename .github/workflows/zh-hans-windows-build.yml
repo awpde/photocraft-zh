@@ -461,16 +461,22 @@ jobs:
           $defKeys = Get-ChildItem -Path (Join-Path $rel 'build') -Recurse -Filter 'keys.deflate' -File -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $defKeys) { throw "找不到 OUT_DIR 的 i18n/keys.deflate —— build.rs 未生成去重键表" }
           $keysBytes = [IO.File]::ReadAllBytes($defKeys.FullName)
-          $keys = [Text.Encoding]::UTF8.GetString([byte[]](Invoke-Inflate $keysBytes)) -split "`n"
+          $keysText = [Text.Encoding]::UTF8.GetString([byte[]](Invoke-Inflate $keysBytes))
+          $keys = $keysText.Split([char]10)   # 保留空元素，与上游 split('\n') 语义一致
+          if ($keys.Length -gt 0 -and $keys[$keys.Length-1] -eq '') { $keys = $keys[0..($keys.Length-2)] }
           $packedText = [Text.Encoding]::UTF8.GetString([byte[]](Invoke-Inflate $defBytes))
+          Write-Host "  调试: def=$(Split-Path $def.FullName -Leaf) dir=$(Split-Path (Split-Path $def.FullName)) $($defBytes.Length)B"
+          Write-Host "  调试: keys=$(Split-Path $defKeys.FullName -Leaf) dir=$(Split-Path (Split-Path $defKeys.FullName)) $($keysBytes.Length)B keys=$($keys.Length)"
+          Write-Host "  调试: packedText=$($packedText.Length) 字符"
           $P1 = [string][char]1; $P2 = [string][char]2; $P3 = [string][char]3
           $sb = New-Object Text.StringBuilder
           $next = 0
-          $packedLines = $packedText -split "`n"
+          $packedLines = $packedText.Split([char]10)   # 保留空元素，与上游 split('\n') 语义一致
           for ($n = 0; $n -lt $packedLines.Length; $n++) {
             if ($n -gt 0) { [void]$sb.Append("`n") }
             $line = $packedLines[$n]
             if ($line.StartsWith($P1)) {
+              if ($line.Length -lt 2) { throw "packed line $($n+1): 空译文条目（$([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($line)))）" }
               $index = $next; $tr = $line.Substring(1)
             } elseif ($line.StartsWith($P2)) {
               $rest = $line.Substring(1)
