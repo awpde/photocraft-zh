@@ -475,10 +475,18 @@ jobs:
           for ($n = 0; $n -lt $packedLines.Length; $n++) {
             if ($n -gt 0) { [void]$sb.Append("`n") }
             $line = $packedLines[$n]
-            if ($line.StartsWith($P1)) {
+            # 空行（Windows 检出为 CRLF 时是单个 \r）不是词条：上游 build.rs 原样保留，这里也
+            # 原样追加（下面的逐字节比对依赖它），只是不参与词条判定。
+            if ($line.Length -eq 0 -or [int][char]$line[0] -eq 13) {
+              [void]$sb.Append($line)
+              continue
+            }
+            # 前缀判断一律用 Ordinal：pwsh(.NET/ICU) 的 culture-sensitive 比较把 \r、\x01 这类
+            # 控制字符视为可忽略，会把空行误判成 \x01 开头的空译文条目。
+            if ($line.StartsWith($P1, [StringComparison]::Ordinal)) {
               if ($line.Length -lt 2) { throw "packed line $($n+1): 空译文条目（$([BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($line)))）" }
               $index = $next; $tr = $line.Substring(1)
-            } elseif ($line.StartsWith($P2)) {
+            } elseif ($line.StartsWith($P2, [StringComparison]::Ordinal)) {
               $rest = $line.Substring(1)
               $tab = $rest.IndexOf("`t")
               if ($tab -lt 0) { throw "packed line $($n+1): bad key reference" }
@@ -486,7 +494,7 @@ jobs:
               $index = $next + $offset
               $tr = $rest.Substring($tab + 1)
             } else {
-              if ($line.StartsWith($P3)) { $line = $line.Substring(1) }
+              if ($line.StartsWith($P3, [StringComparison]::Ordinal)) { $line = $line.Substring(1) }
               [void]$sb.Append($line)
               continue
             }
