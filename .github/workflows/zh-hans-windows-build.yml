@@ -416,12 +416,15 @@ jobs:
           fi
 
       # 关键校验④：产出 exe 里确实含简体中文译文。
-      # 注意：上游 v0.7.0 起 i18n 存储方式变了 —— build.rs 把 src/i18n/*.tsv 用 flate2 最高压缩
-      # 成 OUT_DIR/i18n/<lang>.tsv.deflate，catalog! 宏再 include_bytes! 编进 exe，运行时才 inflate。
-      # 所以 exe 里**不再有明文中文字符串**，旧版「从词条取译文做字节查找」的校验从 v0.7.0 起
-      # 必然误报（好包也会被卡住）。新校验分三层证明：
-      #   1) OUT_DIR 确实生成了 zh-hans.tsv.deflate（build.rs 覆盖到中文词条）；
-      #   2) 该 deflate 解压后与本次检出的 zh-hans.tsv 逐字节一致（编的是这份词条、内容为真中文）；
+      # 上游 v0.7.0 起 build.rs 把 src/i18n/*.tsv 用 flate2 压成 OUT_DIR/i18n/<lang>.tsv.deflate，
+      # catalog! 宏再 include_bytes! 编进 exe，运行时才 inflate；v0.9.0 起改为**去重打包**：
+      # 各语言重复的英文原文抽成 keys.deflate，每语言只存差异（条目行写成 \x01<译文> 或
+      # \x02<偏移><TAB><译文>，非条目行以 \x03 前缀转义），运行时 unpack 还原。
+      # 所以 exe 里**不再有明文中文字符串**，且 zh-hans.tsv.deflate 解压后也不再等于词条文件，
+      # 旧版逐字节比对必然误报（好包也会被卡住）。新校验分三层证明：
+      #   1) OUT_DIR 确实生成了 zh-hans.tsv.deflate 与 keys.deflate（build.rs 覆盖到中文词条）；
+      #   2) 按上游 unpack 算法（keys.deflate + 每语言差异 deflate）还原词条，与本次检出的
+      #      zh-hans.tsv 逐字节一致（编的是这份词条、内容为真中文）；
       #   3) 取 deflate 数据的中段 32 字节在 exe 里按字节命中（include_bytes! 真把它编进了二进制）。
       - name: 校验 exe 内确实含简体中文译文
         shell: pwsh
@@ -440,18 +443,57 @@ jobs:
           if ($defBytes.Length -lt 16) { throw "deflate 产物异常过小：$($defBytes.Length) 字节" }
           Write-Host "  ✅ 找到 deflate 产物：$($def.Name)（$($defBytes.Length) 字节）"
 
-          # 2) 解压（raw deflate）并与检出的词条文件逐字节比对
+          # 2) 上游 v0.9.0 起打包格式是「keys.deflate + 每语言差异 deflate」：条目行不再重复
+          #    英文原文，而是 \x01<译文>（键紧跟 keys 上一条）或 \x02<偏移><TAB><译文>
+          #    （跳回 keys 中的索引），非条目行以 \x03 前缀转义。这里解压 keys.deflate 与
+          #    zh-hans.tsv.deflate，按上游 unpack() 算法还原词条，再与检出的 zh-hans.tsv
+          #    逐字节比对（证明编进 exe 的是这份词条、内容为真中文）。
           $srcBytes = [IO.File]::ReadAllBytes((Join-Path 'src' $env:ZH_CATALOG))
-          $ms = New-Object IO.MemoryStream(,$defBytes)
-          $ds = New-Object IO.Compression.DeflateStream($ms, [IO.Compression.CompressionMode]::Decompress)
-          $outMs = New-Object IO.MemoryStream
-          $ds.CopyTo($outMs); $ds.Dispose(); $ms.Dispose()
-          $inflated = $outMs.ToArray(); $outMs.Dispose()
-          if ($inflated.Length -ne $srcBytes.Length) { throw "deflate 解压后长度 $($inflated.Length) 与词条文件 $($srcBytes.Length) 不一致" }
+          function Invoke-Inflate([byte[]]$src) {
+            if ($src.Length -eq 0) { return (New-Object byte[] 0) }
+            $ms = New-Object IO.MemoryStream(,$src)
+            $ds = New-Object IO.Compression.DeflateStream($ms, [IO.Compression.CompressionMode]::Decompress)
+            $outMs = New-Object IO.MemoryStream
+            $ds.CopyTo($outMs); $ds.Dispose(); $ms.Dispose()
+            $bytes = $outMs.ToArray(); $outMs.Dispose()
+            return ,$bytes
+          }
+          $defKeys = Get-ChildItem -Path (Join-Path $rel 'build') -Recurse -Filter 'keys.deflate' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $defKeys) { throw "找不到 OUT_DIR 的 i18n/keys.deflate —— build.rs 未生成去重键表" }
+          $keysBytes = [IO.File]::ReadAllBytes($defKeys.FullName)
+          $keys = [Text.Encoding]::UTF8.GetString([byte[]](Invoke-Inflate $keysBytes)) -split "`n"
+          $packedText = [Text.Encoding]::UTF8.GetString([byte[]](Invoke-Inflate $defBytes))
+          $P1 = [string][char]1; $P2 = [string][char]2; $P3 = [string][char]3
+          $sb = New-Object Text.StringBuilder
+          $next = 0
+          $packedLines = $packedText -split "`n"
+          for ($n = 0; $n -lt $packedLines.Length; $n++) {
+            if ($n -gt 0) { [void]$sb.Append("`n") }
+            $line = $packedLines[$n]
+            if ($line.StartsWith($P1)) {
+              $index = $next; $tr = $line.Substring(1)
+            } elseif ($line.StartsWith($P2)) {
+              $rest = $line.Substring(1)
+              $tab = $rest.IndexOf("`t")
+              if ($tab -lt 0) { throw "packed line $($n+1): bad key reference" }
+              $offset = [int64]::Parse($rest.Substring(0, $tab))
+              $index = $next + $offset
+              $tr = $rest.Substring($tab + 1)
+            } else {
+              if ($line.StartsWith($P3)) { $line = $line.Substring(1) }
+              [void]$sb.Append($line)
+              continue
+            }
+            if ($index -lt 0 -or $index -ge $keys.Length) { throw "packed line $($n+1): bad key reference" }
+            [void]$sb.Append($keys[$index]); [void]$sb.Append("`t"); [void]$sb.Append($tr)
+            $next = $index + 1
+          }
+          $rebuiltBytes = [Text.Encoding]::UTF8.GetBytes($sb.ToString())
+          if ($rebuiltBytes.Length -ne $srcBytes.Length) { throw "还原词条长度 $($rebuiltBytes.Length) 与检出词条 $($srcBytes.Length) 不一致" }
           $bad = -1
-          for ($i = 0; $i -lt $srcBytes.Length; $i++) { if ($inflated[$i] -ne $srcBytes[$i]) { $bad = $i; break } }
-          if ($bad -ge 0) { throw "deflate 解压内容与词条文件不一致（偏移 $bad）" }
-          Write-Host "  ✅ 解压后与检出词条逐字节一致（$($srcBytes.Length) 字节，含简体中文）"
+          for ($i = 0; $i -lt $srcBytes.Length; $i++) { if ($rebuiltBytes[$i] -ne $srcBytes[$i]) { $bad = $i; break } }
+          if ($bad -ge 0) { throw "还原词条与检出词条不一致（偏移 $bad）" }
+          Write-Host "  ✅ 还原后与检出词条逐字节一致（$($srcBytes.Length) 字节，含简体中文）"
 
           # 3) deflate 数据窗口在 exe 中按字节命中
           $winLen = 32
