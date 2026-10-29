@@ -17,7 +17,10 @@
      the specified database code page '1252'"）。内置的 WixUI_zh-CN.wxl 自己也是这么写的。
 -->
 <WixLocalization Culture="zh-cn" Codepage="936" xmlns="http://wixtoolset.org/schemas/v4/wxl">
-  <!-- 上游 photocraft 特有的两条（WiX 内置包没有，必须我们提供）-->
+  <!-- 上游 photocraft 特有的两条（WiX 内置包没有）。
+       注意：上游 v0.17.0 的 photocraft.wxs 与 install-policy.wxi 都没有引用这两个 id
+       （属于上游遗留的死文案），未被引用的 String 不会写进 MSI，所以别拿它们当校验探针。
+       保留在这里是为了上游将来若重新引用，我们已经备好中文。-->
   <String Id="PhotocraftInstallDirNote" Value="仅安装到当前账户自己的程序目录，不需要管理员权限。" />
   <String Id="PhotocraftAllUsers" Value="为这台电脑上的所有用户安装（需要管理员权限）" />
 
