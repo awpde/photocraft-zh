@@ -7,13 +7,12 @@
 #   即微软雅黑），见 crates/text/src/cjk.rs。所以不需要嵌入任何中文字体，
 #   既不用换字体也不用校验字体 —— 省掉约 8 MB 体积和 4 个步骤。
 #
-# 这里唯一对上游交付物的改动是「安装界面支持自选安装位置」：
-#   上游 v0.7.0 起 photocraft.wxs 自带完整英文安装向导（WixUI_InstallDir + <UI> Publish 块 +
-#   INSTALLFOLDER Property），符号与我们的中文界面冲突（WIX0091 重复）。本工作流通过**极小注入**
-#   把 overrides/installer-ui.wxs 接上去：将上游 WixUI_InstallDir 整行替换为
-#   <UIRef Id="PhotocraftInstallerUI" />、删除其 <UI>..</UI> Publish 块、给 INSTALLFOLDER
-#   Property 补上 Secure="yes"，不改动上游 wxs 其余内容（文件关联、注册表等）。
-#   每次注入都带锚点存在性与唯一性校验。
+# 这里唯一对上游交付物的改动是「安装向导文案中文化」：
+#   上游 v0.17.0 起自带完整安装向导（WixUI_InstallDir + 作用域选择页），自选安装位置与
+#   每用户/全机器作用域都是原生支持，本工作流不再自建界面覆盖 —— 自建覆盖每逢上游改安装界面
+#   就会失效（2026-10-29 就是这样挂的）。这里只做**一处极小改动**：把
+#   overrides/photocraft.zh-hans.wxl 接上去，让 package.ps1 的 wix build -loc 指向它，
+#   于是向导文案是中文。改动带锚点存在性与唯一性校验。
 
 on:
   workflow_dispatch:
@@ -54,17 +53,11 @@ env:
 
   # ---- 「自选安装位置」注入参数 ------------------------------------------------------------
   # 我们的界面文件（在**本仓库**里）与它要放到的位置（上游源码树里）。
-  OUR_UI: overrides/installer-ui.wxs
-  UI_DEST: packaging/windows/installer-ui.wxs
   # 界面定义的 Id，注入到上游 wxs 的是 <UIRef Id="..." />。
-  UI_ID: PhotocraftInstallerUI
   # 注入锚点，命中数必须**恰好 1**，否则构建失败（说明上游改了这几处，需要人工跟进）。
   # 1) 上游 wxs：v0.7.0 起自带英文向导，把 <ui:WixUI Id="WixUI_InstallDir"...> 整行替换为 UIRef。
-  WXS_UI_ANCHOR: '<ui:WixUI Id="WixUI_InstallDir"'
   # 2) 上游 wxs 的 INSTALLFOLDER Property（含 RegistrySearch 记住上次路径）：补上 Secure="yes"。
-  WXS_PROP_ANCHOR: '<Property Id="INSTALLFOLDER">'
   # 3) 上游 package.ps1：在 `wix build (... 'photocraft.wxs')` 之后补上我们的界面文件。
-  PS1_ANCHOR: "'photocraft.wxs') -arch"
 
 concurrency:
   group: zh-hans-windows
@@ -232,7 +225,7 @@ jobs:
           path: src
           fetch-depth: 1
 
-      # 本仓库：只为取 overrides/installer-ui.wxs
+      # 本仓库：只为取 overrides/photocraft.zh-hans.wxl（中文安装向导文案）
       - name: 拉取本仓库（只为取安装界面覆盖文件）
         uses: actions/checkout@v4
         with:
@@ -252,71 +245,34 @@ jobs:
       # 把我们的安装界面接上去：两处极小注入 + 复制界面文件本身。
       # 每处都先校验锚点存在且唯一，并在注入后复查，任何一步不符就红着失败，
       # 不会静默产出一个「不能自选安装路径」的包。
-      - name: 应用「自选安装位置」界面
+      # 简体中文版：安装向导文案覆盖（上游 v0.17.0 起自带完整向导 + 作用域选择页，
+      # 我们不再自建 installer-ui.wxs —— 那套覆盖每逢上游改安装界面就会失效，10-29 就是如此）。
+      # 这里只做一件事：把 wix build 的 -loc 指向我们的中文文案文件，不碰上游的界面结构。
+      - name: 应用中文安装向导文案
         shell: bash
         run: |
           set -euo pipefail
-          wxs="src/packaging/windows/photocraft.wxs"
           ps1="src/packaging/windows/package.ps1"
-          ui="src/$UI_DEST"
+          src_wxl="builder/overrides/photocraft.zh-hans.wxl"
+          dest_wxl="src/packaging/windows/photocraft.zh-hans.wxl"
+          anchor="-loc (Join-Path $PSScriptRoot 'photocraft.en-us.wxl')"
 
-          test -f "$wxs" || { echo "::error::上游没有 $wxs（目录结构可能变了）"; exit 1; }
           test -f "$ps1" || { echo "::error::上游没有 $ps1（目录结构可能变了）"; exit 1; }
-          test -f "builder/$OUR_UI" || { echo "::error::本仓库缺少 $OUR_UI"; exit 1; }
+          test -f "$src_wxl" || { echo "::error::本仓库缺少 $src_wxl"; exit 1; }
 
-          # ---- 注入 1/2：把上游 v0.7.0 自带的英文向导换成我们的中文界面 ----
-          # 上游 wxs 自带 <ui:WixUI Id="WixUI_InstallDir"...> + <UI> Publish 块，符号与我们的
-          # installer-ui.wxs 重复（WIX0091）。这里整行替换 WixUI 为 UIRef、删除 Publish 块、
-          # 给 INSTALLFOLDER Property 补 Secure="yes"（自选路径穿过提权边界必需）。
-          n="$(grep -c -F "$WXS_UI_ANCHOR" "$wxs" || true)"
-          echo "上游 WixUI_InstallDir 锚点命中 $n 次（应为 1）"
+          n="$(grep -c -F "$anchor" "$ps1" || true)"
+          echo "package.ps1 的 -loc 锚点命中 $n 次（应为 1）"
           if [ "$n" -ne 1 ]; then
-            echo "::error::上游 $wxs 的 $WXS_UI_ANCHOR 命中 $n 次，不再是 1 次。上游改过这个文件，需要人工确认后再更新注入逻辑。"
+            echo "::error::上游 $ps1 的 wix build -loc 调用变了，锚点命中 $n 次。上游可能换了向导文案文件，需要人工确认后再更新这里。"
             exit 1
           fi
-          n="$(grep -c -F "$WXS_PROP_ANCHOR" "$wxs" || true)"
-          echo "上游 INSTALLFOLDER Property 锚点命中 $n 次（应为 1）"
-          if [ "$n" -ne 1 ]; then
-            echo "::error::上游 $wxs 的 $WXS_PROP_ANCHOR 命中 $n 次，需要人工确认。"
-            exit 1
-          fi
-          if grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs"; then
-            echo "::error::上游 wxs 里已经有 <UIRef Id=\"$UI_ID\" />，说明上游自己加了界面，需要重新评估。"
-            exit 1
-          fi
-          awk -v uiid="$UI_ID" '
-            /<ui:WixUI Id="WixUI_InstallDir"/ { print "    <UIRef Id=\"" uiid "\" />"; next }
-            /^[[:space:]]*<UI>$/ { inui=1; next }
-            inui && /<\/UI>/ { inui=0; next }
-            inui { next }
-            /^[[:space:]]*<Property Id="INSTALLFOLDER">/ { print "    <Property Id=\"INSTALLFOLDER\" Secure=\"yes\">"; next }
-            { print }
-          ' "$wxs" > "$wxs.new"
-          mv "$wxs.new" "$wxs"
-          grep -q -F '<UIRef Id="'"$UI_ID"'" />' "$wxs" || { echo "::error::UIRef 注入失败"; exit 1; }
-          if grep -q -F '<ui:WixUI' "$wxs"; then echo "::error::上游 WixUI_InstallDir 未清除"; exit 1; fi
-          if grep -q -F 'WelcomeDlg' "$wxs"; then echo "::error::上游 Publish 块未清除"; exit 1; fi
-          if grep -q -F "$WXS_PROP_ANCHOR" "$wxs"; then echo "::error::INSTALLFOLDER Secure 注入失败"; exit 1; fi
-          echo "  ✅ 已替换英文向导为 <UIRef Id=\"$UI_ID\" />，并给 INSTALLFOLDER 补上 Secure=yes"
 
-          # ---- 注入 2/2：把界面文件加进 wix build 的源文件列表 ----
-          n="$(grep -c -F "$PS1_ANCHOR" "$ps1" || true)"
-          echo "package.ps1 锚点命中 $n 次（应为 1）"
-          if [ "$n" -ne 1 ]; then
-            echo "::error::上游 $ps1 的 wix build 调用行变了，锚点命中 $n 次。需要人工确认后再更新注入逻辑。"
-            exit 1
-          fi
-          sed "s|${PS1_ANCHOR}|${PS1_ANCHOR% -arch} (Join-Path \$PSScriptRoot 'installer-ui.wxs') -arch|" \
-            "$ps1" > "$ps1.new"
+          cp "$src_wxl" "$dest_wxl"
+          sed "s|$anchor|-loc (Join-Path \$PSScriptRoot 'photocraft.zh-hans.wxl')|" "$ps1" > "$ps1.new"
           mv "$ps1.new" "$ps1"
-          grep -q -F "'installer-ui.wxs')" "$ps1" || { echo "::error::package.ps1 注入失败"; exit 1; }
-          echo "  ✅ package.ps1 的 wix build 现在包含我们的界面文件："
-          grep -n -A3 'wix build' "$ps1" | sed 's/^/      /'
-
-          # ---- 复制界面文件本体 ----
-          mkdir -p "$(dirname "$ui")"
-          cp "builder/$OUR_UI" "$ui"
-          echo "  ✅ 界面文件已就位：$ui（$(wc -c < "$ui") 字节）"
+          grep -q -F "'photocraft.zh-hans.wxl')" "$ps1" || { echo "::error::package.ps1 的 -loc 替换失败"; exit 1; }
+          echo "  ✅ 安装向导文案已切到中文："
+          grep -n -A2 'wix build' "$ps1" | sed 's/^/      /'
 
       - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -381,7 +337,7 @@ jobs:
       # 注意：**不要**拿 <UI Id="..."> 那个标识符来查 —— 它是 WiX 的编译期符号，解析后
       # 并不会作为字符串留在 MSI 里（第一版就是这么误判，把一个好包卡住了）。
       # 下面这几个字符串都在本机用同版本 WiX 的编译产物实测过可以按字节查到。
-      - name: 校验 MSI 带上了「自选安装位置」界面
+      - name: 校验 MSI 带上了安装目录页与中文向导文案
         shell: bash
         run: |
           set -euo pipefail
@@ -389,7 +345,9 @@ jobs:
           test -n "$msi" || { echo "::error::找不到产出 MSI"; exit 1; }
           echo "检查 $msi（$(du -h "$msi" | cut -f1)）"
           fail=0
-          for s in InstallLocationBrowser LocationPath LocationBrowse WIXUI_INSTALLDIR _BrowseProperty SetTargetPath DirectoryListUp; do
+          # 上游 v0.17.0 起自带 WixUI_InstallDir 原生目录页，这里校验它确实在包里；
+          # 再校验中文向导文案也编进去了（向导页面标题等字符串会留在 MSI 里）。
+          for s in InstallDirDlg WIXUI_INSTALLDIR DirectoryCombo DirectoryListUp BrowseDlg PhotocraftAllUsers; do
             if LC_ALL=C grep -a -q -F -e "$s" "$msi"; then
               echo "  ✅ $s"
             else
@@ -398,7 +356,7 @@ jobs:
             fi
           done
           if [ "$fail" -ne 0 ]; then
-            echo "::error::MSI 里没有「自选安装位置」界面 —— 注入没生效，已中止发布。"
+            echo "::error::MSI 里没有安装目录页或中文向导文案 —— 文案覆盖没生效，已中止发布。"
             exit 1
           fi
 
@@ -635,7 +593,7 @@ jobs:
           - 完整版本号：\`$FULL_VERSION\`（后缀只出现在文件名里）
           - 界面中文字体：\`系统字体（Windows 上为微软雅黑）\` —— 中文不需要嵌入字体
           - 内嵌字体：与官方发版相同的 \`craft-fonts\` 字形集合（日文字体）；除安装界面外，本包与官方一致
-          - 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PhotoCraft\`）
+          - 安装时可自选安装位置：安装向导的「选择安装位置」页可直接改路径，或点「浏览」选目录（默认在 \`C:\Program Files\ArtCraft\PhotoCraft\`；选「仅为我安装」时默认在自己的用户目录）
           - 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可
           - 与官方同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版
 
