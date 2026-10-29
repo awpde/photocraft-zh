@@ -69,7 +69,7 @@ gh release list --repo awpde/photocraft-zh --limit 5
 | `✅ 已替换英文向导为 <UIRef Id="PhotocraftInstallerUI" />` | 界面注入生效 |
 | `✅ 还原后与检出词条逐字节一致（N 字节，含简体中文）` | exe 里的译文完好 |
 | `✅ 简体中文译文已以压缩形式编入 exe` | 中文确实编进去了 |
-| `✅ InstallDirDlg` / `WIXUI_INSTALLDIR` / `DirectoryCombo` / `DirectoryListUp` / `PhotocraftAllUsers` | 上游原生目录页 + 中文向导文案都在 |
+| `✅ InstallDirDlg` / `WIXUI_INSTALLDIR` / `DirectoryCombo` / `DirectoryListUp` + 中文 GBK 字节命中 | 上游原生目录页 + 中文向导文案都在 |
 
 ### 3.2 ★ 任何字符串前缀/比较判断必须用 `Ordinal`
 
