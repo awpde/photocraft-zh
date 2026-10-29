@@ -28,7 +28,7 @@
 
 **一句话**：这里没有任何 PhotoCraft 代码，只有一条 GitHub Actions 流水线 ——
 拉上游 [storytold/photocraft](https://github.com/storytold/photocraft) 的源码，
-用**极小注入**接上我们自己的中文安装界面，编译成**简体中文 Windows 安装包**发布到 Releases。
+用**极小改动**把上游安装向导的文案换成中文，编译成**简体中文 Windows 安装包**发布到 Releases。
 
 | 要点 | 值 |
 |---|---|
@@ -40,7 +40,7 @@
 | 产物 | MSI + 便携版 zip，每个包都带许可证与「非官方构建」声明四件套 |
 
 **本仓库刻意做得比 PdfCraft 简单得多**，改动面越小，上游更新时越不容易坏：
-`overrides/` 里**只有安装界面一个文件**，不改任何源码，不碰字体，不换图标。
+`overrides/` 里**只有安装向导文案一个文件**，不改任何源码，不碰字体，不换图标。
 
 ---
 
@@ -69,7 +69,7 @@ gh release list --repo awpde/photocraft-zh --limit 5
 | `✅ 已替换英文向导为 <UIRef Id="PhotocraftInstallerUI" />` | 界面注入生效 |
 | `✅ 还原后与检出词条逐字节一致（N 字节，含简体中文）` | exe 里的译文完好 |
 | `✅ 简体中文译文已以压缩形式编入 exe` | 中文确实编进去了 |
-| `✅ InstallLocationBrowser` / `LocationPath` / `LocationBrowse` / `WIXUI_INSTALLDIR` … | 自选安装位置界面完整 |
+| `✅ InstallDirDlg` / `WIXUI_INSTALLDIR` / `DirectoryCombo` / `DirectoryListUp` / `PhotocraftAllUsers` | 上游原生目录页 + 中文向导文案都在 |
 
 ### 3.2 ★ 任何字符串前缀/比较判断必须用 `Ordinal`
 
