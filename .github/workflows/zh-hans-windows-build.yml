@@ -364,12 +364,33 @@ jobs:
           done
           # 我们的中文文案在 MSI 里按代码页 936（GBK）存储，所以要用 GBK 字节去查，
           # 用 UTF-8 的中文去 grep 是查不到的。
-          zh_gbk="$(printf '\xce\xaa\xd5\xe2\xcc\xa8\xb5\xe7\xc4\xd4\xc9\xcf\xb5\xc4\xcb\xf9\xd3\xd0\xd3\xc3\xbb\xa7\xb0\xb2\xd7\xb0')"
+          #
+          # 探针选「安装向导」这四个字：WiX 内置 zh-CN 语言包的 WelcomeDlgDescription
+          # （"安装向导将在计算机上安装 ..."）与 ExitDialogTitle（"[ProductName] 安装向导已完成"）
+          # 里都有它，我们的覆盖文案也用这个词组 —— 只要向导是中文，它就必然出现在 MSI 里。
+          #
+          # （别再用 PhotocraftAllUsers 的文案当探针：上游 v0.17.0 的 photocraft.wxs 与
+          #  install-policy.wxi 都没有引用那个 id，它属于上游遗留的死文案，
+          #  未被引用的 String 不会进 MSI 的 String 表，会让好包被误判为失败。）
+          zh_gbk="$(printf '\xb0\xb2\xd7\xb0\xcf\xf2\xb5\xbc')"
           if LC_ALL=C grep -a -q -F -e "$zh_gbk" "$msi"; then
             echo "  ✅ 中文向导文案已编入 MSI（GBK 字节命中）"
           else
             echo "  ❌ 中文向导文案未编入 MSI"
             fail=1
+            # 诊断：把 MSI 里连续的高位字节片段列出来，下一次不用再猜。
+            echo "  --- MSI 里的非 ASCII 片段（最多 20 条）---"
+            LC_ALL=C grep -a -o -P '[\x80-\xff]{6,}' "$msi" 2>/dev/null \
+              | LC_ALL=C iconv -f GBK -t UTF-8 2>/dev/null | sort -u | head -20 || true
+          fi
+
+          # 探针2：只有「我们的覆盖」里才有的开头（内置语言包没有这四个字）。
+          # 缺它说明 -loc 覆盖没生效（向导仍是内置中文，但没有版本号文案）——只警告不中止。
+          ours_gbk="$(printf '\xb0\xb2\xd7\xb0\xcf\xf2\xb5\xbc\xbd\xab\xb0\xd1')"
+          if LC_ALL=C grep -a -q -F -e "$ours_gbk" "$msi"; then
+            echo "  ✅ 我们的中文覆盖文案也已编入 MSI"
+          else
+            echo "  ⚠️ 未命中我们覆盖独有的文案（向导仍可能是中文，只是没有版本号文案）"
           fi
 
           if [ "$fail" -ne 0 ]; then
