@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  简体中文版的安装向导文案。
+
+  上游 photocraft v0.17.0 起自带完整安装向导（<ui:WixUI Id="WixUI_InstallDir"> + 作用域选择页），
+  我们不再自建 installer-ui.wxs —— 那套覆盖一旦遇上上游改安装界面就会失效（2026-10-29 就是如此）。
+  改用「本地化文件」这条稳得多的路：只覆盖文案，不碰上游的界面结构。
+
+  用法：package.ps1 的 wix build 调用改成
+      -culture zh-cn -loc (Join-Path $PSScriptRoot 'photocraft.zh-cn.wxl')
+  WiX 5 自带 WixUI_zh-CN.wxl（向导全部页面的中文底座），我们这个文件只补它没有的几条。
+
+  两个要点：
+  1. Culture 必须写成 zh-cn（与 -culture 一致，WiX 内置包就是这个名字）。
+  2. Codepage="936"（简体中文 GBK）**必须写**：MSI 数据库只能存该代码页里的字符，
+     不设的话中文放不进去，链接期报 WIX0311（"characters that are not available in
+     the specified database code page '1252'"）。内置的 WixUI_zh-CN.wxl 自己也是这么写的。
+-->
+<WixLocalization Culture="zh-cn" Codepage="936" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <!-- 上游 photocraft 特有的两条（WiX 内置包没有，必须我们提供）-->
+  <String Id="PhotocraftInstallDirNote" Value="仅安装到当前账户自己的程序目录，不需要管理员权限。" />
+  <String Id="PhotocraftAllUsers" Value="为这台电脑上的所有用户安装（需要管理员权限）" />
+
+  <!-- 以下几条内置包里有（且 Overridable="yes"），这里覆盖是为了带上版本号 -->
+  <String Id="WelcomeDlgTitle" Overridable="yes" Value="{\WixUI_Font_Bigger}欢迎使用 [ProductName] [PhotocraftVersion] 安装向导" />
+  <String Id="WelcomeDlgDescription" Overridable="yes" Value="安装向导将把 [ProductName] [PhotocraftVersion] 安装到你的电脑上。点「下一步」继续，或点「取消」退出安装向导。" />
+  <String Id="VerifyReadyDlgInstallTitle" Overridable="yes" Value="{\WixUI_Font_Title}准备安装 [ProductName] [PhotocraftVersion]" />
+  <String Id="ExitDialogTitle" Overridable="yes" Value="{\WixUI_Font_Bigger}[ProductName] [PhotocraftVersion] 安装向导已完成" />
+</WixLocalization>
